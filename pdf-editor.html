@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF Editor</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+  <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f0f13;
+      color: #fff;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Toolbar ── */
+    #toolbar {
+      background: #1a1a24;
+      border-bottom: 1px solid #2a2a38;
+      padding: 10px 18px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    .logo {
+      font-size: 17px;
+      font-weight: 700;
+      color: #7c6af7;
+      margin-right: 8px;
+      white-space: nowrap;
+    }
+
+    .sep { width: 1px; height: 28px; background: #2a2a38; margin: 0 2px; }
+
+    button {
+      padding: 7px 14px;
+      border: none;
+      border-radius: 7px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: background 0.15s, transform 0.1s;
+      white-space: nowrap;
+    }
+    button:active { transform: scale(0.96); }
+    button:disabled { opacity: 0.35; cursor: not-allowed; pointer-events: none; }
+
+    .btn-primary   { background: #7c6af7; color: #fff; }
+    .btn-primary:hover  { background: #6a58e0; }
+    .btn-accent    { background: #2a2a38; color: #ccc; border: 1px solid #3a3a50; }
+    .btn-accent:hover   { background: #32324a; color: #fff; }
+    .btn-green     { background: #22c55e; color: #fff; }
+    .btn-green:hover    { background: #16a34a; }
+    .btn-red       { background: #ef4444; color: #fff; }
+    .btn-red:hover      { background: #dc2626; }
+
+    .tool-group { display: flex; align-items: center; gap: 6px; }
+
+    /* Font controls */
+    #font-size {
+      width: 58px; padding: 6px 8px;
+      background: #2a2a38; border: 1px solid #3a3a50;
+      border-radius: 7px; color: #fff; font-size: 13px;
+    }
+    #font-color {
+      width: 34px; height: 34px; border: none; border-radius: 7px;
+      cursor: pointer; background: none; padding: 0;
+    }
+    #font-color::-webkit-color-swatch-wrapper { padding: 0; }
+    #font-color::-webkit-color-swatch { border-radius: 6px; border: 2px solid #3a3a50; }
+
+    label.lbl { font-size: 12px; color: #888; }
+
+    /* Page nav */
+    #page-nav {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    #page-info { font-size: 13px; color: #888; min-width: 80px; text-align: center; }
+
+    /* ── Drop zone ── */
+    #drop-zone {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      border: 2px dashed #2a2a50;
+      margin: 32px;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      gap: 12px;
+    }
+    #drop-zone:hover, #drop-zone.over {
+      border-color: #7c6af7;
+      background: rgba(124,106,247,0.04);
+    }
+    #drop-zone .icon { font-size: 56px; }
+    #drop-zone h2 { font-size: 22px; color: #aaa; }
+    #drop-zone p { font-size: 14px; color: #555; }
+    #drop-zone .browse-btn {
+      margin-top: 8px;
+      padding: 10px 24px;
+      background: #7c6af7;
+      color: #fff;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+    }
+    #drop-zone .browse-btn:hover { background: #6a58e0; }
+
+    /* ── Editor ── */
+    #editor {
+      flex: 1;
+      display: none;
+      overflow: hidden;
+    }
+
+    #canvas-scroll {
+      width: 100%;
+      height: 100%;
+      overflow: auto;
+      background: #0a0a10;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    #canvas-wrapper {
+      position: relative;
+      flex-shrink: 0;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+    }
+
+    /* pdf-canvas is behind; fabric canvas sits on top */
+    #pdf-canvas {
+      display: block;
+      position: absolute;
+      top: 0; left: 0;
+    }
+
+    /* Fabric replaces #overlay-canvas with its own wrapper */
+    #overlay-canvas { display: block; }
+
+    /* Place-mode cursors */
+    #canvas-wrapper.place-text   * { cursor: text   !important; }
+    #canvas-wrapper.place-image  * { cursor: crosshair !important; }
+
+    /* Active tool button highlight */
+    button.tool-active { outline: 2px solid #7c6af7; outline-offset: 2px; }
+
+    /* ── Loading overlay ── */
+    #loading {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 999;
+      align-items: center;
+      justify-content: center;
+    }
+    #loading.show { display: flex; }
+    .loading-box {
+      background: #1a1a24;
+      border: 1px solid #2a2a38;
+      border-radius: 14px;
+      padding: 28px 48px;
+      font-size: 16px;
+      color: #ccc;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+    }
+    .spinner {
+      width: 32px; height: 32px;
+      border: 3px solid #2a2a38;
+      border-top-color: #7c6af7;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Hint bar ── */
+    #hint {
+      position: fixed;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1a1a24cc;
+      backdrop-filter: blur(6px);
+      border: 1px solid #2a2a38;
+      border-radius: 30px;
+      padding: 7px 18px;
+      font-size: 12px;
+      color: #666;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+
+<!-- Toolbar -->
+<div id="toolbar">
+  <span class="logo">✦ PDF Editor</span>
+  <div class="sep"></div>
+
+  <div class="tool-group">
+    <button class="btn-primary" id="btn-text" disabled>＋ Text</button>
+    <button class="btn-primary" id="btn-image" disabled>＋ Image</button>
+  </div>
+
+  <div class="sep"></div>
+
+  <!-- Text style controls -->
+  <div class="tool-group" id="text-controls" style="display:none">
+    <label class="lbl">Size</label>
+    <input type="number" id="font-size" value="24" min="8" max="200" />
+    <label class="lbl">Color</label>
+    <input type="color" id="font-color" value="#000000" />
+  </div>
+
+  <div class="sep" id="text-sep" style="display:none"></div>
+
+  <button class="btn-red" id="btn-delete" disabled>⌫ Delete</button>
+
+  <div class="sep"></div>
+
+  <button class="btn-green" id="btn-download" disabled>↓ Download PDF</button>
+  <button class="btn-accent" id="btn-open-new">⇄ Open another PDF</button>
+
+  <div id="page-nav">
+    <button class="btn-accent" id="btn-prev" disabled>‹</button>
+    <span id="page-info">—</span>
+    <button class="btn-accent" id="btn-next" disabled>›</button>
+  </div>
+</div>
+
+<!-- Drop zone -->
+<div id="drop-zone">
+  <div class="icon">📄</div>
+  <h2>Drop your PDF here</h2>
+  <p>Supports single and multi-page PDFs</p>
+  <button class="browse-btn" id="browse-btn">Browse file</button>
+  <input type="file" id="file-input" accept=".pdf" style="display:none" />
+</div>
+
+<!-- Editor -->
+<div id="editor">
+  <div id="canvas-scroll">
+    <div id="canvas-wrapper">
+      <canvas id="pdf-canvas"></canvas>
+      <canvas id="overlay-canvas"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- Hidden image picker -->
+<input type="file" id="image-input" accept="image/*" style="display:none" />
+
+<!-- Loading -->
+<div id="loading">
+  <div class="loading-box">
+    <div class="spinner"></div>
+    <span id="loading-msg">Loading…</span>
+  </div>
+</div>
+
+<!-- Hint -->
+<div id="hint">Drag to move · Corner handles to resize · Double-click text to edit · Delete key to remove</div>
+
+<script>
+/* ─────────────────────────────────────────
+   Setup
+───────────────────────────────────────── */
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+const SCALE = 1.5;
+const EXPORT_SCALE = 4; // export at 4× PDF-point resolution (~288 DPI)
+
+let pdfJsDoc       = null;
+let totalPages     = 0;
+let currentPage    = 1;
+let pageOverlays   = {};   // { pageNum: fabricJSON }
+let fabricCanvas   = null;
+let originalBytes  = null;
+let isTextSelected = false;
+let placeMode = null; // 'text' | 'image' | null
+let pendingImageDataUrl = null; // holds image data while waiting for canvas click
+
+/* ─────────────────────────────────────────
+   DOM refs
+───────────────────────────────────────── */
+const $ = id => document.getElementById(id);
+
+const dropZone      = $('drop-zone');
+const fileInput     = $('file-input');
+const browseBtn     = $('browse-btn');
+const editor        = $('editor');
+const pdfCanvas     = $('pdf-canvas');
+const loadingEl     = $('loading');
+const loadingMsg    = $('loading-msg');
+const pageInfo      = $('page-info');
+const imageInput    = $('image-input');
+const fontSizeInput = $('font-size');
+const fontColorInput= $('font-color');
+const textControls  = $('text-controls');
+const textSep       = $('text-sep');
+
+const btnText     = $('btn-text');
+const btnImage    = $('btn-image');
+const btnDelete   = $('btn-delete');
+const btnDownload = $('btn-download');
+const btnOpenNew  = $('btn-open-new');
+const btnPrev     = $('btn-prev');
+const btnNext     = $('btn-next');
+
+/* ─────────────────────────────────────────
+   Drop / Upload
+───────────────────────────────────────── */
+browseBtn.addEventListener('click', e => { e.stopPropagation(); fileInput.click(); });
+dropZone.addEventListener('click', () => fileInput.click());
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('over');
+  const f = e.dataTransfer.files[0];
+  if (f?.type === 'application/pdf') loadPDF(f);
+});
+
+fileInput.addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (f) loadPDF(f);
+});
+
+/* ─────────────────────────────────────────
+   Load PDF
+───────────────────────────────────────── */
+async function loadPDF(file) {
+  showLoading('Loading PDF…');
+  try {
+    originalBytes = await file.arrayBuffer();
+    pdfJsDoc = await pdfjsLib.getDocument({ data: originalBytes.slice(0) }).promise;
+    totalPages = pdfJsDoc.numPages;
+    currentPage = 1;
+    pageOverlays = {};
+
+    dropZone.style.display = 'none';
+    editor.style.display = 'block';
+
+    btnText.disabled = false;
+    btnImage.disabled = false;
+    btnDelete.disabled = false;
+    btnDownload.disabled = false;
+
+    await renderPage(currentPage);
+    setupFabric();
+  } catch (err) {
+    alert('Could not load PDF: ' + err.message);
+    console.error(err);
+  }
+  hideLoading();
+}
+
+/* ─────────────────────────────────────────
+   Render PDF page (background canvas)
+───────────────────────────────────────── */
+async function renderPage(pageNum) {
+  const page = await pdfJsDoc.getPage(pageNum);
+  const vp   = page.getViewport({ scale: SCALE });
+
+  pdfCanvas.width  = vp.width;
+  pdfCanvas.height = vp.height;
+
+  const wrapper = $('canvas-wrapper');
+  wrapper.style.width  = vp.width  + 'px';
+  wrapper.style.height = vp.height + 'px';
+
+  await page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport: vp }).promise;
+
+  pageInfo.textContent = `${pageNum} / ${totalPages}`;
+  btnPrev.disabled = pageNum <= 1;
+  btnNext.disabled = pageNum >= totalPages;
+
+  return { width: vp.width, height: vp.height };
+}
+
+/* ─────────────────────────────────────────
+   Fabric canvas (overlay)
+───────────────────────────────────────── */
+function setupFabric() {
+  if (fabricCanvas) {
+    fabricCanvas.off();
+    fabricCanvas.dispose();
+  }
+
+  fabricCanvas = new fabric.Canvas('overlay-canvas', {
+    width: pdfCanvas.width,
+    height: pdfCanvas.height,
+    backgroundColor: null,
+    preserveObjectStacking: true,
+    selection: true,
+  });
+  fabricCanvas.backgroundColor = 'transparent';
+  fabricCanvas.renderAll();
+
+  bindFabricEvents();
+
+  if (pageOverlays[currentPage]) {
+    fabricCanvas.loadFromJSON(pageOverlays[currentPage], () => fabricCanvas.renderAll());
+  }
+}
+
+function bindFabricEvents() {
+  fabricCanvas.on('selection:created', onSelect);
+  fabricCanvas.on('selection:updated', onSelect);
+  fabricCanvas.on('selection:cleared', onDeselect);
+
+  // Live update text properties
+  fabricCanvas.on('object:modified', syncTextControls);
+  fabricCanvas.on('text:changed',    syncTextControls);
+
+  // Click-to-place
+  fabricCanvas.on('mouse:down', onCanvasClick);
+}
+
+function onSelect() {
+  const obj = fabricCanvas.getActiveObject();
+  const isText = obj?.type === 'i-text' || obj?.type === 'textbox';
+  textControls.style.display = isText ? 'flex' : 'none';
+  textSep.style.display      = isText ? 'block' : 'none';
+  isTextSelected = isText;
+  if (isText) syncTextControls();
+}
+
+function onDeselect() {
+  textControls.style.display = 'none';
+  textSep.style.display = 'none';
+  isTextSelected = false;
+}
+
+function syncTextControls() {
+  const obj = fabricCanvas.getActiveObject();
+  if (!obj) return;
+  if (obj.type === 'i-text' || obj.type === 'textbox') {
+    fontSizeInput.value = Math.round(obj.fontSize);
+    fontColorInput.value = rgbToHex(obj.fill) || '#000000';
+  }
+}
+
+/* ─────────────────────────────────────────
+   Page navigation
+───────────────────────────────────────── */
+btnPrev.addEventListener('click', () => changePage(currentPage - 1));
+btnNext.addEventListener('click', () => changePage(currentPage + 1));
+
+async function changePage(newPage) {
+  if (newPage < 1 || newPage > totalPages) return;
+  if (placeMode) exitPlaceMode();
+  saveOverlay();
+  currentPage = newPage;
+  showLoading('Rendering page…');
+
+  const { width, height } = await renderPage(currentPage);
+
+  fabricCanvas.setWidth(width);
+  fabricCanvas.setHeight(height);
+  fabricCanvas.clear();
+  fabricCanvas.backgroundColor = 'transparent';
+
+  if (pageOverlays[currentPage]) {
+    fabricCanvas.loadFromJSON(pageOverlays[currentPage], () => fabricCanvas.renderAll());
+  } else {
+    fabricCanvas.renderAll();
+  }
+
+  onDeselect();
+  hideLoading();
+}
+
+function saveOverlay() {
+  if (fabricCanvas) {
+    pageOverlays[currentPage] = JSON.stringify(fabricCanvas.toJSON());
+  }
+}
+
+/* ─────────────────────────────────────────
+   Place-mode helpers
+───────────────────────────────────────── */
+const canvasWrapper = $('canvas-wrapper');
+const hintEl        = $('hint');
+
+const HINTS = {
+  default: 'Drag to move · Corner handles to resize · Double-click text to edit · Delete key to remove',
+  text:    '📝 Click anywhere on the PDF to place your text',
+  image:   '🖼️ Click anywhere on the PDF to place the image',
+};
+
+function enterPlaceMode(mode) {
+  placeMode = mode;
+  canvasWrapper.classList.remove('place-text', 'place-image');
+  canvasWrapper.classList.add('place-' + mode);
+  fabricCanvas.selection = false;
+  fabricCanvas.discardActiveObject();
+  fabricCanvas.renderAll();
+  hintEl.textContent = HINTS[mode];
+  btnText.classList.toggle('tool-active',  mode === 'text');
+  btnImage.classList.toggle('tool-active', mode === 'image');
+}
+
+function exitPlaceMode() {
+  placeMode = null;
+  pendingImageDataUrl = null;
+  canvasWrapper.classList.remove('place-text', 'place-image');
+  fabricCanvas.selection = true;
+  hintEl.textContent = HINTS.default;
+  btnText.classList.remove('tool-active');
+  btnImage.classList.remove('tool-active');
+}
+
+// Cancel place mode with Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && placeMode) exitPlaceMode();
+});
+
+/* ─────────────────────────────────────────
+   Canvas click → place object
+───────────────────────────────────────── */
+// Attach after fabric is set up — re-bound in bindFabricEvents
+function onCanvasClick(opt) {
+  if (!placeMode) return;
+
+  const pointer = fabricCanvas.getPointer(opt.e);
+
+  if (placeMode === 'text') {
+    const text = new fabric.IText('Your text here', {
+      left: pointer.x,
+      top:  pointer.y,
+      fontSize: parseInt(fontSizeInput.value) || 24,
+      fill: fontColorInput.value || '#000000',
+      fontFamily: 'Arial',
+      editable: true,
+      cornerSize: 10,
+      transparentCorners: false,
+      originX: 'left',
+      originY: 'top',
+    });
+    fabricCanvas.add(text);
+    fabricCanvas.setActiveObject(text);
+    fabricCanvas.renderAll();
+    text.enterEditing();
+    text.selectAll();
+    exitPlaceMode();
+
+  } else if (placeMode === 'image' && pendingImageDataUrl) {
+    fabric.Image.fromURL(pendingImageDataUrl, img => {
+      const maxW  = 300;
+      const scale = img.width > maxW ? maxW / img.width : 1;
+      img.set({
+        left: pointer.x,
+        top:  pointer.y,
+        scaleX: scale,
+        scaleY: scale,
+        cornerSize: 10,
+        transparentCorners: false,
+        originX: 'left',
+        originY: 'top',
+      });
+      fabricCanvas.add(img);
+      fabricCanvas.setActiveObject(img);
+      fabricCanvas.renderAll();
+      exitPlaceMode();
+    });
+  }
+}
+
+/* ─────────────────────────────────────────
+   Add Text button — enter place mode
+───────────────────────────────────────── */
+btnText.addEventListener('click', () => {
+  if (placeMode === 'text') { exitPlaceMode(); return; }
+  enterPlaceMode('text');
+});
+
+/* ─────────────────────────────────────────
+   Add Image button — pick file then enter place mode
+───────────────────────────────────────── */
+btnImage.addEventListener('click', () => {
+  if (placeMode === 'image') { exitPlaceMode(); return; }
+  imageInput.click();
+});
+
+imageInput.addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = ev => {
+    pendingImageDataUrl = ev.target.result;
+    enterPlaceMode('image');
+  };
+  reader.readAsDataURL(file);
+  e.target.value = '';
+});
+
+/* ─────────────────────────────────────────
+   Delete selected
+───────────────────────────────────────── */
+btnDelete.addEventListener('click', deleteSelected);
+
+document.addEventListener('keydown', e => {
+  if ((e.key === 'Delete' || e.key === 'Backspace') && fabricCanvas) {
+    // Don't interfere while editing text
+    const obj = fabricCanvas.getActiveObject();
+    if (obj?.isEditing) return;
+    deleteSelected();
+  }
+});
+
+function deleteSelected() {
+  if (!fabricCanvas) return;
+  const active = fabricCanvas.getActiveObjects();
+  if (!active.length) return;
+  active.forEach(o => fabricCanvas.remove(o));
+  fabricCanvas.discardActiveObject();
+  fabricCanvas.renderAll();
+}
+
+/* ─────────────────────────────────────────
+   Font size / color controls
+───────────────────────────────────────── */
+fontSizeInput.addEventListener('input', () => {
+  const obj = fabricCanvas?.getActiveObject();
+  if (!obj) return;
+  obj.set('fontSize', parseInt(fontSizeInput.value) || 24);
+  fabricCanvas.renderAll();
+});
+
+fontColorInput.addEventListener('input', () => {
+  const obj = fabricCanvas?.getActiveObject();
+  if (!obj) return;
+  obj.set('fill', fontColorInput.value);
+  fabricCanvas.renderAll();
+});
+
+/* ─────────────────────────────────────────
+   Download PDF
+───────────────────────────────────────── */
+btnDownload.addEventListener('click', downloadPDF);
+
+btnOpenNew.addEventListener('click', () => {
+  // Reset state and show drop zone again
+  if (fabricCanvas) { fabricCanvas.dispose(); fabricCanvas = null; }
+  pdfJsDoc = null; originalBytes = null; totalPages = 0; currentPage = 1; pageOverlays = {};
+  pdfCanvas.getContext('2d').clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
+  editor.style.display = 'none';
+  dropZone.style.display = '';
+  fileInput.value = '';
+  btnText.disabled = true; btnImage.disabled = true;
+  btnDelete.disabled = true; btnDownload.disabled = true;
+  btnPrev.disabled = true; btnNext.disabled = true;
+  pageInfo.textContent = '—';
+  onDeselect();
+});
+
+async function downloadPDF() {
+  showLoading('Generating PDF…');
+  try {
+    saveOverlay();
+
+    const { PDFDocument } = PDFLib;
+    const pdfDoc = await PDFDocument.load(originalBytes);
+    const pages  = pdfDoc.getPages();
+
+    for (let pn = 1; pn <= totalPages; pn++) {
+      const overlayJSON = pageOverlays[pn];
+      if (!overlayJSON) continue;
+
+      const parsed = JSON.parse(overlayJSON);
+      if (!parsed.objects || parsed.objects.length === 0) continue;
+
+      // Render this page's fabric objects to an off-screen canvas
+      const pdfJsPage = await pdfJsDoc.getPage(pn);
+      const vp = pdfJsPage.getViewport({ scale: SCALE });
+
+      const overlayPng = await renderOverlayToPng(overlayJSON, vp.width, vp.height);
+      if (!overlayPng) continue;
+
+      const pngBytes = dataUrlToBytes(overlayPng);
+      const pngImage = await pdfDoc.embedPng(pngBytes);
+
+      const page = pages[pn - 1];
+      const { width, height } = page.getSize();
+
+      page.drawImage(pngImage, { x: 0, y: 0, width, height });
+    }
+
+    const outBytes = await pdfDoc.save();
+    const blob = new Blob([outBytes], { type: 'application/pdf' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = 'edited.pdf';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    alert('Failed to generate PDF: ' + err.message);
+    console.error(err);
+  }
+  hideLoading();
+}
+
+/* Render a fabric JSON to a high-res PNG data-URL on a hidden off-screen canvas.
+   width/height are in SCALE-space (display pixels). We zoom up by EXPORT_SCALE/SCALE
+   so the output PNG is at EXPORT_SCALE pixels-per-PDF-point (~288 DPI for EXPORT_SCALE=4). */
+function renderOverlayToPng(json, width, height) {
+  return new Promise(resolve => {
+    const zoom    = EXPORT_SCALE / SCALE;          // e.g. 4/1.5 ≈ 2.667
+    const exportW = Math.round(width  * zoom);
+    const exportH = Math.round(height * zoom);
+
+    const el = document.createElement('canvas');
+    el.width  = exportW;
+    el.height = exportH;
+    el.style.cssText = 'position:fixed;left:-99999px;top:-99999px;visibility:hidden;';
+    document.body.appendChild(el);
+
+    const tmpFabric = new fabric.Canvas(el, {
+      width: exportW,
+      height: exportH,
+      enableRetinaScaling: false,
+      renderOnAddRemove: false,
+    });
+    tmpFabric.backgroundColor = 'transparent';
+    // Zoom scales all objects up so text/images render at full export resolution
+    tmpFabric.setZoom(zoom);
+
+    tmpFabric.loadFromJSON(json, () => {
+      tmpFabric.renderAll();
+      const dataUrl = tmpFabric.toDataURL({ format: 'png', multiplier: 1 });
+      tmpFabric.dispose();
+      document.body.removeChild(el);
+      resolve(dataUrl);
+    });
+  });
+}
+
+/* ─────────────────────────────────────────
+   Helpers
+───────────────────────────────────────── */
+function dataUrlToBytes(dataUrl) {
+  const base64 = dataUrl.split(',')[1];
+  const bin    = atob(base64);
+  const bytes  = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function rgbToHex(color) {
+  if (!color) return '#000000';
+  if (color.startsWith('#')) return color;
+  const m = color.match(/\d+/g);
+  if (!m) return '#000000';
+  return '#' + m.slice(0, 3).map(n => parseInt(n).toString(16).padStart(2, '0')).join('');
+}
+
+function showLoading(msg) {
+  loadingMsg.textContent = msg || 'Loading…';
+  loadingEl.classList.add('show');
+}
+function hideLoading() {
+  loadingEl.classList.remove('show');
+}
+</script>
+</body>
+</html>
